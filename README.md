@@ -1,2 +1,2 @@
 # Hardening-V0
-Hardening script
+Hardening script based on Lynis outputs
