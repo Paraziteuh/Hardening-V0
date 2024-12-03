@@ -1,8 +1,24 @@
 # Hardening-V0
-Hardening script based on Lynis results
 
-Gitclone the repository
-````cd Hardening-V0````
-````chmod + x Hardening.sh````
-````You must run it as sudo````
-````sudo ./hardening.sh````
+**Hardening-V0** is a baseline system hardening script, designed as a starting point for improving the security of Linux systems based on **Lynis** audit results. 
+
+This script is **intended for educational purposes** and should be customized to meet specific security requirements or use cases.
+
+---
+
+## Features
+- Provides basic security hardening measures based on Lynis recommendations.
+- Includes modifiable configurations for user-specific needs.
+- Helps users understand the importance of system hardening and how to apply it.
+
+---
+
+## Prerequisites
+Before running this script:
+1. Ensure **Lynis** is installed and a security audit has been conducted:
+   ```bash
+   git clone
+   cd Hardening-V0
+   sudo chmod +x Hardening.sh
+   sudo ./Hardening.sh
+   
