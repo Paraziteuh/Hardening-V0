@@ -17,7 +17,7 @@ This script is **intended for educational purposes** and should be customized to
 Before running this script:
 1. Ensure **Lynis** is installed and a security audit has been conducted:
    ```bash
-   git clone
+   git clone https://github.com/Paraziteuh/Hardening-V0.git
    cd Hardening-V0
    sudo chmod +x Hardening.sh
    sudo ./Hardening.sh
