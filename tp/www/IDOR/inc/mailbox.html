@@ -1,0 +1,23 @@
+<html>
+	<head>
+			<title> [*] IDOR</title>
+	</head>
+	<body>
+		<p>
+			<form class="form-logout" action="logout.php">
+				<input type="submit" value="Logout" id="logout" class="btn btn-primary btn-lg">
+			</form>
+			<table border="1">
+				<thead>
+					<tr>
+						<th colspan="2">MAILBOX</th>
+					</tr>
+				</thead>
+				{MAILBOX_CONTENT}
+			</table>
+		</p>
+		<p>
+			{MAIL_CONTENT}
+		</p>
+	</body>
+</html>
