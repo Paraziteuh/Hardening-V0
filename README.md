@@ -20,5 +20,6 @@ Before running this script:
    git clone https://github.com/Paraziteuh/Hardening-V0.git
    cd Hardening-V0
    sudo chmod +x Hardening.sh
+   sed -i 's/\r//g' Hardening.sh
    sudo ./Hardening.sh
    
