@@ -1,80 +1,109 @@
 #!/bin/bash
 
-# Fonction pour afficher un message avec statut
+# Verify if started with sudo
+if [ "$EUID" -ne 0 ]; then
+    echo -e "\033[1;31m[ERROR] This script must be run as root (with sudo).\033[0m"
+    exit 1
+fi
+
+
+sudo apt update -y
+sudo apt upgrade -y
+# Function to display a status message
 log() {
     echo -e "\033[1;32m[INFO]\033[0m $1"
 }
 
-# Vérification et installation des paquets requis
+# Check and install required packages
 install_package() {
     local package="$1"
     if ! dpkg -l | grep -q "^ii  $package "; then
-        log "Installation du paquet $package..."
-        apt install -y "$package" >> /var/log/config_script.log 2>&1
+        log "$package is being installed..."
+        sudo apt install -y "$package" >> /var/log/config_script.log 2>&1
         if [[ $? -ne 0 ]]; then
-            log "Erreur lors de l'installation de $package."
-            echo "Échec de l'installation de $package. Vérifiez les logs pour plus de détails." >&2
+            log "Error while installing $package."
+            echo "Failure while installing $package. Please check logs for more details." >&2
         else
-            log "Paquet $package installé avec succès."
+            log "$package installation was successful."
         fi
     else
-        log "Le paquet $package est déjà installé."
+        log "$package is already installed."
     fi
 }
 
-# Login def
+# Configure login.defs
 configure_login_defs() {
-    log "Configuration des paramètres de /etc/login.defs..."
+    log "Setting parameters in /etc/login.defs..."
 
     LOGIN_DEFS="/etc/login.defs"
 
-    # Configuration des rounds de hachage de mot de passe
-    if ! grep -q "^PASS_MIN_DAYS" "$LOGIN_DEFS"; then
-        echo "PASS_MIN_DAYS    1" >> "$LOGIN_DEFS"
-        log "PASS_MIN_DAYS défini à 1."
+    # Configurer PASS_MIN_DAYS et PASS_MAX_DAYS
+    sed -i 's/^PASS_MIN_DAYS\s\+[0-9]\+/PASS_MIN_DAYS 7/' "$LOGIN_DEFS"
+    sed -i 's/^PASS_MAX_DAYS\s\+[0-9]\+/PASS_MAX_DAYS 90/' "$LOGIN_DEFS"
+    
+    # Configurer PASS_MIN_LEN (ajouter si absent)
+    if grep -q "^PASS_MIN_LEN" "$LOGIN_DEFS"; then
+        sed -i 's/^PASS_MIN_LEN\s\+[0-9]\+/PASS_MIN_LEN 12/' "$LOGIN_DEFS"
+    else
+        echo "PASS_MIN_LEN 12" >> "$LOGIN_DEFS"
     fi
 
-    if ! grep -q "^PASS_MAX_DAYS" "$LOGIN_DEFS"; then
-        echo "PASS_MAX_DAYS    90" >> "$LOGIN_DEFS"
-        log "PASS_MAX_DAYS défini à 90."
+    # Configurer PASS_MAX_LEN (ajouter si absent)
+    if grep -q "^PASS_MAX_LEN" "$LOGIN_DEFS"; then
+        sed -i 's/^PASS_MAX_LEN\s\+[0-9]\+/PASS_MAX_LEN 20/' "$LOGIN_DEFS"
+    else
+        echo "PASS_MAX_LEN 20" >> "$LOGIN_DEFS"
+    fi
+    
+    # Ajouter ou mettre à jour umask dans /etc/profile
+    if grep -q '^UMASK' "$LOGIN_DEFS"; then
+        # Mise à jour de la ligne UMASK existante
+        sed -i "s/^UMASK.*/UMASK 027/" "$LOGIN_DEFS"
+    else
+        echo 'UMASK 027' >> "$LOGIN_DEFS"
     fi
 
-    if ! grep -q "^PASS_MIN_LEN" "$LOGIN_DEFS"; then
-        echo "PASS_MIN_LEN     12" >> "$LOGIN_DEFS"
-        log "PASS_MIN_LEN défini à 12."
+    # Mettre à jour umask dans /etc/profile
+    if grep -q '^umask' /etc/profile; then
+        sed -i 's/^umask.*/umask 027/' /etc/profile
+    else
+        echo 'umask 027' >> /etc/profile
     fi
 
-    if ! grep -q "^PASS_HASHING_ALGO" "$LOGIN_DEFS"; then
-        echo "PASS_HASHING_ALGO sha512" >> "$LOGIN_DEFS"
-        log "PASS_HASHING_ALGO défini à sha512."
+    # Mettre à jour umask dans /etc/bash.bashrc
+    if grep -q '^umask' /etc/bash.bashrc; then
+        sed -i 's/^umask.*/umask 027/' /etc/bash.bashrc
+    else
+        echo 'umask 027' >> /etc/bash.bashrc
     fi
-
-    if ! grep -q "^UMASK" "$LOGIN_DEFS"; then
-        echo "UMASK            027" >> "$LOGIN_DEFS"
-        log "UMASK défini à 027."
-    fi
-
-    log "Configuration de /etc/login.defs terminée."
 }
 
 
-# Fonction de hardening des compilateurs
+# Compiler hardening
 harden_compilers() {
-    log "Application du hardening des compilateurs si existant..."
+    log "Applying compiler hardening if present..."
 
     if [ -f /usr/bin/gcc ]; then
-        chmod o-rx /usr/bin/gcc
+        sudo chmod o-rx /usr/bin/gcc
     else
-        log "Le fichier /usr/bin/gcc n'existe pas."
+    
+        log "File /usr/bin/gcc does not exist."
+    fi
+
+        if [ -f /usr/bin/as ]; then
+        sudo chmod o-rx /usr/bin/as
+    else
+    
+        log "File /usr/bin/as does not exist."
     fi
 
     if [ -f /usr/bin/g++ ]; then
-        chmod o-rx /usr/bin/g++
+        sudo chmod o-rx /usr/bin/g++
     else
-        log "Le fichier /usr/bin/g++ n'existe pas."
+        log "File /usr/bin/g++ does not exist."
     fi
 
-    # Création d'un script pour la configuration des compilateurs
+    # Create a script for compiler hardening
     cat <<EOF > /etc/profile.d/compiler_hardening.sh
 export CFLAGS='-Wall -Wextra -Werror -fstack-protector-strong -D_FORTIFY_SOURCE=2'
 export CXXFLAGS='-Wall -Wextra -Werror -fstack-protector-strong -D_FORTIFY_SOURCE=2'
@@ -82,14 +111,31 @@ export LDFLAGS='-Wl,-z,relro,-z,now'
 EOF
 
     chmod +x /etc/profile.d/compiler_hardening.sh
-    log "Hardening des compilateurs appliqué."
+    log "Compiler hardening is complete."
 }
 
-# Fonction de configuration SSH
+# SSH configuration
 configure_ssh() {
-    log "Configuration du service SSH..."
+    log "SSH hardening..."
     SSHD_CONFIG="/etc/ssh/sshd_config"
 
+    # Demander le nom de l'entreprise à l'utilisateur
+    read -p "Enter company name: " entity_name
+
+    # Vérifier si l'utilisateur a entré une valeur
+    if [[ -z "$entity_name" ]]; then
+        log "Error: No company name provided. Exiting SSH configuration."
+        exit 1
+    fi
+
+    log "Company name entered: $entity_name"
+
+    # Backup de la configuration SSH si nécessaire
+    if [ ! -f /etc/ssh/sshd_config.bak ]; then
+        cp "$SSHD_CONFIG" /etc/ssh/sshd_config.bak
+    fi
+
+    # Configuration des options SSH
     declare -A ssh_options=(
         [AllowTcpForwarding]="NO"
         [ClientAliveCountMax]="2"
@@ -101,22 +147,20 @@ configure_ssh() {
         [X11Forwarding]="NO"
         [AllowAgentForwarding]="NO"
         [Port]="2222"
+        [Banner]="/etc/issue"
+        [PermitRootLogin]="no"
     )
 
-    # Modification de la configuration SSH
     for key in "${!ssh_options[@]}"; do
         if grep -q "^$key " "$SSHD_CONFIG"; then
-            sed -i "s/^$key .*/$key ${ssh_options[$key]}/" "$SSHD_CONFIG"
+            # Utiliser un délimiteur qui ne risque pas d'apparaître dans le nom de l'entreprise
+            sed -i "s#$key .*#$key ${ssh_options[$key]}#" "$SSHD_CONFIG"
         else
             echo "$key ${ssh_options[$key]}" >> "$SSHD_CONFIG"
         fi
     done
 
-    # Sauvegarde et ajout de la bannière
-    if [ ! -f /etc/issue.bak ]; then
-        cp /etc/issue /etc/issue.bak
-    fi
-
+    # Création de la bannière SSH
     cat <<EOF > /etc/issue
 ***************************************************************************
 *                        Authorized Access Only                           *
@@ -143,34 +187,37 @@ in prosecution to the fullest extent of the law.
 ***************************************************************************
 EOF
 
-    unset entity_name
+    # Appliquer les permissions appropriées au fichier de la bannière
+    chmod 0644 /etc/issue
 
-    # Vérification de la syntaxe de la configuration SSH
+    # Vérification de la syntaxe pour SSH
     if command -v sshd &> /dev/null; then
         sshd -t
         if [ $? -ne 0 ]; then
-            log "Erreur dans la configuration SSH. Veuillez vérifier le fichier $SSHD_CONFIG."
+            log "Error in SSH configuration. Please verify: $SSHD_CONFIG."
             exit 1
         fi
     else
-        log "Commande sshd non trouvée. Vérifiez l'installation de OpenSSH."
+        log "sshd not found. Please check your OpenSSH installation."
         exit 1
     fi
-
-    # Redémarrage du service SSH
+    cp /etc/issue /etc/issue.net
+    # Redémarrer le service SSH pour appliquer les modifications
     systemctl restart sshd
-    log "Service SSH configuré."
+    log "SSH service configured."
+    
 }
 
-# Fonction de configuration des permissions
+
+# Permission configuration
 configure_permissions() {
-    log "Configuration des permissions..."
+    log "Configuring permissions..."
 
     for file in /boot/grub/grub.cfg /etc/crontab /etc/ssh/sshd_config; do
         if [ -f "$file" ]; then
             chmod 0600 "$file"
         else
-            log "Le fichier $file n'existe pas."
+            log "File $file does not exist."
         fi
     done
 
@@ -178,21 +225,21 @@ configure_permissions() {
         if [ -d "$dir" ]; then
             chmod 0640 "$dir"
         else
-            log "Le répertoire $dir n'existe pas."
+            log "Directory $dir does not exist."
         fi
     done
 
-    log "Permissions configurées."
+    log "Permissions configured."
 }
 
-# Fonction de configuration de Fail2Ban
+# Configure Fail2Ban
 configure_fail2ban() {
     if ! command -v systemctl &> /dev/null; then
-        log "systemctl non trouvé, impossible de configurer Fail2Ban."
+        log "systemctl not found, unable to configure Fail2Ban."
         return
     fi
 
-    log "Installation et configuration de Fail2Ban..."
+    log "Installing and configuring Fail2Ban..."
     install_package fail2ban
 
     FAIL2BAN_CONFIG="/etc/fail2ban/jail.local"
@@ -209,141 +256,107 @@ EOF
 
     systemctl enable fail2ban > /dev/null
     systemctl start fail2ban > /dev/null
-    log "Fail2Ban configuré et activé."
+    log "Fail2Ban is ready."
 }
 
-# Fonction de configuration des paquets installés
+# Configure installed packages
 configure_installed_packages() {
-    log "Configuration des paquets installés..."
+    log "Configuring installed packages..."
 
     # ClamAV
     if systemctl is-active --quiet clamav-freshclam; then
-        log "ClamAV est déjà actif."
+        log "ClamAV is already running."
     else
+        cat <<EOL > /etc/clamav/clamd.conf
+# Basic configuration for clamd
+LogFile /var/log/clamav/clamd.log
+LogTime yes
+DatabaseDirectory /var/lib/clamav
+TemporaryDirectory /tmp
+Email alert@example.com
+PidFile /var/run/clamav/clamd.pid
+EOL
         systemctl enable clamav-freshclam > /dev/null
         systemctl start clamav-freshclam > /dev/null
-        log "ClamAV configuré et mis à jour."
+        log "ClamAV is ready."
     fi
 
     # AppArmor
     if systemctl is-active --quiet apparmor; then
-        log "AppArmor est déjà activé."
+        log "AppArmor is already active."
     else
         systemctl enable apparmor > /dev/null
         systemctl start apparmor > /dev/null
-        log "AppArmor activé."
+        log "AppArmor is activated."
     fi
 
-    # SELinux (vérification)
+    # SELinux check
     if command -v selinuxenabled &> /dev/null && selinuxenabled; then
-        log "SELinux est actif."
+        log "SELinux is active."
     else
-        log "SELinux n'est pas actif ou pris en charge sur ce système."
+        log "SELinux is not active or not supported on this system."
     fi
 
     # RSyslog
     if systemctl is-active --quiet rsyslog; then
-        log "RSyslog est déjà configuré."
+        log "RSyslog is already configured."
     else
         systemctl enable rsyslog > /dev/null
         systemctl start rsyslog > /dev/null
-        log "RSyslog configuré et activé."
+        log "RSyslog configured and activated."
     fi
 
     # Unattended-Upgrades
     if dpkg -l | grep -q "^ii  unattended-upgrades "; then
         dpkg-reconfigure -plow unattended-upgrades > /dev/null
-        log "Unattended-Upgrades configuré pour les mises à jour automatiques."
+        log "Unattended-Upgrades configured for automatic updates."
     else
-        log "Le paquet unattended-upgrades n'est pas installé."
+        log "The unattended-upgrades package is not installed."
     fi
 
-    log "Tous les paquets installés ont été configurés."
+    log "All installed packages have been configured."
 }
 
-# Fonction pour la configuration des paquets supplémentaires
+# USB storage disabling
+disable_usb_storage() {
+    log "Disabling USB storage devices..."
+
+    # Add UDEV rule to block USB storage
+    echo 'ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_DRIVER}=="usb-storage", ATTR{authorized}="0"' > /etc/udev/rules.d/99-usb-storage.rules
+
+    # Reload UDEV rules
+    udevadm control --reload-rules
+    log "USB storage devices are disabled."
+}
+
+# Install additional packages
 install_extras() {
-    log "Installation des paquets supplémentaires..."
-    local packages=("apt-listchanges" "apt-listbugs" "clamav" "apparmor" "selinux-utils"
-                    "rsyslog" "unattended-upgrades" "tripwire" "libpam-tmpdir" "libpam-pwquality")
-
-    for package in "${packages[@]}"; do
-        install_package "$package"
-    done
-
-    # Configurer Tripwire après l'installation
-    log "Configuration de Tripwire..."
-    dpkg --configure -a >> /var/log/config_script.log 2>&1
-    log "Tripwire configuré."
-
-    log "Paquets supplémentaires et frameworks de sécurité installés."
+    log "Installing additional security tools..."
+    install_package auditd
+    install_package ufw
+    install_package lynis
+    install_package rkhunter
+    install_package fail2ban
+    install_package debsums
+    install_package sysstat
+    install_package clamav
+    install_package apt-listbugs
+    install_package libpam-tmpdir
+    install_package apt-show-versions
+    install_package pam_passwdqc
+    log "Additional security tools installed."
 }
 
-# Fonction pour la configuration de l'expiration des mots de passe
-set_password_expiration_for_all() {
-    local expiration_days="$1"
-    if [ -z "$expiration_days" ]; then
-        echo "Usage: set_password_expiration_for_all <days>"
-        return 1
-    fi
-
-    while IFS=: read -r username _ _ _ _ shell; do
-        if [ -n "$shell" ] && [ "$shell" != "/usr/sbin/nologin" ] && [ "$shell" != "/bin/false" ]; then
-            chage -M "$expiration_days" "$username"
-        fi
-    done < /etc/passwd
-
-    log "L'expiration des mots de passe a été définie sur $expiration_days jours pour tous les utilisateurs."
-}
-
-# Fonction pour désactiver la création de core dumps
-disable_core_dumps() {
-    log "Désactivation de la création de core dumps..."
-    if ! grep -q "core" /etc/security/limits.conf; then
-        echo "* soft core 0" >> /etc/security/limits.conf
-        echo "* hard core 0" >> /etc/security/limits.conf
-        log "Core dumps désactivés dans /etc/security/limits.conf."
-    else
-        log "Core dumps déjà désactivés dans /etc/security/limits.conf."
-    fi
-}
-
-# Fonction pour configurer le hachage des mots de passe
-configure_password_hashing() {
-    log "Configuration des rounds de hachage des mots de passe..."
-    LOGIN_DEFS="/etc/login.defs"
-
-    if grep -q "^ENCRYPT_METHOD" "$LOGIN_DEFS"; then
-        sed -i "s/^ENCRYPT_METHOD .*/ENCRYPT_METHOD SHA512/" "$LOGIN_DEFS"
-    else
-        echo "ENCRYPT_METHOD SHA512" >> "$LOGIN_DEFS"
-    fi
-
-    if grep -q "^PASS_MIN_DAYS" "$LOGIN_DEFS"; then
-        sed -i "s/^PASS_MIN_DAYS .*/PASS_MIN_DAYS 1/" "$LOGIN_DEFS"
-    else
-        echo "PASS_MIN_DAYS 1" >> "$LOGIN_DEFS"
-    fi
-
-    if grep -q "^PASS_MAX_DAYS" "$LOGIN_DEFS"; then
-        sed -i "s/^PASS_MAX_DAYS .*/PASS_MAX_DAYS 90/" "$LOGIN_DEFS"
-    else
-        echo "PASS_MAX_DAYS 90" >> "$LOGIN_DEFS"
-    fi
-
-    log "Configuration des mots de passe mise à jour dans /etc/login.defs."
-}
-
-# Appels des fonctions principales
+# Run the functions
 install_extras
-configure_installed_packages
-logi
+configure_login_defs
 harden_compilers
 configure_ssh
 configure_permissions
 configure_fail2ban
-set_password_expiration_for_all 90
-disable_core_dumps
-configure_password_hashing
+disable_usb_storage
+configure_installed_packages
 
-log "Toutes les configurations sont terminées."
+
+# Reboot system
+echo -e "\033[1;31m[WARNING] Your system must be restarted to apply changes !\033[0m"
