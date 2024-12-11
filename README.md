@@ -15,11 +15,17 @@ This script is **intended for educational purposes** and should be customized to
 
 ## Prerequisites
 Before running this script:
-1. Ensure **Lynis** is installed and a security audit has been conducted:
+1. Please modify the config files in config/:
    ```bash
    git clone https://github.com/Paraziteuh/Hardening-V0.git
    cd Hardening-V0
    sudo chmod +x Hardening.sh
    sed -i 's/\r//g' Hardening.sh
    sudo ./Hardening.sh
-   
+   ```
+
+Afer running the script, run the following:
+
+```bash
+sudo lynis audit system --pentest
+```
