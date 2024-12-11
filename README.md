@@ -26,6 +26,6 @@ Before running this script:
 
 Afer running the script, run the following:
 
-```bash
-sudo lynis audit system --pentest
-```
+   ```bash
+   sudo lynis audit system --pentest
+   ```
