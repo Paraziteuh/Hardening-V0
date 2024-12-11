@@ -24,7 +24,7 @@ Before running this script:
    sudo ./Hardening.sh
    ```
 
-   2. Run the following:
+2. Run the following:
 
    ```bash
    sudo lynis audit system --pentest
