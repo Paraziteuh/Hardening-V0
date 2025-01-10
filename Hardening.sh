@@ -116,39 +116,51 @@ EOF
 
 # SSH configuration
 configure_ssh() {
-    log "Configuration du service SSH..."
-    CONFIG_FILE="/config/ssh.config"
+    log "SSH hardening..."
     SSHD_CONFIG="/etc/ssh/sshd_config"
 
-    # Vérifier si le fichier de configuration existe
-    if [ ! -f "$CONFIG_FILE" ]; then
-        log "Fichier de configuration SSH non trouvé : $CONFIG_FILE"
+    # Demander le nom de l'entreprise à l'utilisateur
+    read -p "Enter company name: " entity_name
+
+    # Vérifier si l'utilisateur a entré une valeur
+    if [[ -z "$entity_name" ]]; then
+        log "Error: No company name provided. Exiting SSH configuration."
         exit 1
     fi
 
-    # Lecture des options depuis le fichier de configuration
-    declare -A ssh_options
-    while IFS='=' read -r key value; do
-        # Ignorer les lignes vides ou les commentaires
-        if [[ -n "$key" && "$key" != \#* ]]; then
-            ssh_options[$key]="$value"
-        fi
-    done < "$CONFIG_FILE"
+    log "Company name entered: $entity_name"
 
-    # Modification de la configuration SSH
+    # Backup de la configuration SSH si nécessaire
+    if [ ! -f /etc/ssh/sshd_config.bak ]; then
+        cp "$SSHD_CONFIG" /etc/ssh/sshd_config.bak
+    fi
+
+    # Configuration des options SSH
+    declare -A ssh_options=(
+        [AllowTcpForwarding]="NO"
+        [ClientAliveCountMax]="2"
+        [Compression]="NO"
+        [LogLevel]="VERBOSE"
+        [MaxAuthTries]="3"
+        [MaxSessions]="2"
+        [TCPKeepAlive]="NO"
+        [X11Forwarding]="NO"
+        [AllowAgentForwarding]="NO"
+        [Port]="2222"
+        [Banner]="/etc/issue"
+        [PermitRootLogin]="no"
+    )
+
     for key in "${!ssh_options[@]}"; do
         if grep -q "^$key " "$SSHD_CONFIG"; then
-            sed -i "s/^$key .*/$key ${ssh_options[$key]}/" "$SSHD_CONFIG"
+            # Utiliser un délimiteur qui ne risque pas d'apparaître dans le nom de l'entreprise
+            sed -i "s#$key .*#$key ${ssh_options[$key]}#" "$SSHD_CONFIG"
         else
             echo "$key ${ssh_options[$key]}" >> "$SSHD_CONFIG"
         fi
     done
 
-    # Sauvegarde et ajout de la bannière
-    if [ ! -f /etc/issue.bak ]; then
-        cp /etc/issue /etc/issue.bak
-    fi
-
+    # Création de la bannière SSH
     cat <<EOF > /etc/issue
 ***************************************************************************
 *                        Authorized Access Only                           *
@@ -175,24 +187,27 @@ in prosecution to the fullest extent of the law.
 ***************************************************************************
 EOF
 
-    unset entity_name
+    # Appliquer les permissions appropriées au fichier de la bannière
+    chmod 0644 /etc/issue
 
-    # Vérification de la syntaxe de la configuration SSH
+    # Vérification de la syntaxe pour SSH
     if command -v sshd &> /dev/null; then
         sshd -t
         if [ $? -ne 0 ]; then
-            log "Erreur dans la configuration SSH. Veuillez vérifier le fichier $SSHD_CONFIG."
+            log "Error in SSH configuration. Please verify: $SSHD_CONFIG."
             exit 1
         fi
     else
-        log "Commande sshd non trouvée. Vérifiez l'installation de OpenSSH."
+        log "sshd not found. Please check your OpenSSH installation."
         exit 1
     fi
-
-    # Redémarrage du service SSH
+    cp /etc/issue /etc/issue.net
+    # Redémarrer le service SSH pour appliquer les modifications
     systemctl restart sshd
-    log "Service SSH configuré."
+    log "SSH service configured."
+    
 }
+
 
 # Permission configuration
 configure_permissions() {
