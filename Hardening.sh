@@ -129,6 +129,35 @@ EOF
     log "Compiler hardening is complete."
 }
 
+# Kernel/network sysctl hardening
+configure_sysctl() {
+    log "Applying kernel/network sysctl hardening..."
+
+    SYSCTL_HARDENING_FILE="$SCRIPT_DIR/config/sysctl-hardening.conf"
+    if [[ ! -f "$SYSCTL_HARDENING_FILE" ]]; then
+        log "Sysctl hardening file not found at $SYSCTL_HARDENING_FILE, skipping."
+        return
+    fi
+
+    cp "$SYSCTL_HARDENING_FILE" /etc/sysctl.d/99-hardening.conf
+    sysctl --system > /dev/null
+    log "Sysctl hardening applied."
+}
+
+# Kernel module blacklist for uncommon filesystems/protocols
+configure_module_blacklist() {
+    log "Blacklisting uncommon kernel modules..."
+
+    MODPROBE_BLACKLIST_FILE="$SCRIPT_DIR/config/modprobe-blacklist.conf"
+    if [[ ! -f "$MODPROBE_BLACKLIST_FILE" ]]; then
+        log "Module blacklist file not found at $MODPROBE_BLACKLIST_FILE, skipping."
+        return
+    fi
+
+    cp "$MODPROBE_BLACKLIST_FILE" /etc/modprobe.d/hardening-blacklist.conf
+    log "Kernel module blacklist installed (takes effect for modules not already loaded)."
+}
+
 # SSH configuration
 configure_ssh() {
     log "SSH hardening..."
@@ -272,6 +301,20 @@ configure_ufw() {
     ufw status verbose
 }
 
+# Time synchronization (accurate time matters for TLS validation and for
+# the auditd time-change rules in config/audit.rules to be meaningful)
+configure_chrony() {
+    if ! command -v chronyd &> /dev/null; then
+        log "chrony not found, skipping time sync configuration."
+        return
+    fi
+
+    log "Enabling chrony time synchronization..."
+    systemctl enable chrony > /dev/null 2>&1 || systemctl enable chronyd > /dev/null 2>&1
+    systemctl restart chrony > /dev/null 2>&1 || systemctl restart chronyd > /dev/null 2>&1
+    log "chrony is active."
+}
+
 
 # Permission configuration
 configure_permissions() {
@@ -368,6 +411,84 @@ configure_auditd() {
     fi
 }
 
+# sudo/su hardening: log every sudo command, shorten the cached credential
+# window, and restrict su to members of the 'sudo' group.
+configure_sudo_su() {
+    log "Hardening sudo and su..."
+
+    local sudo_drop_in="/etc/sudoers.d/99-hardening"
+    local sudo_tmp
+    sudo_tmp="$(mktemp)"
+    cat <<EOF > "$sudo_tmp"
+Defaults        logfile="/var/log/sudo.log"
+Defaults        log_input
+Defaults        log_output
+Defaults        timestamp_timeout=5
+EOF
+
+    # visudo -c valide la syntaxe AVANT d'activer le fichier : un
+    # sudoers.d invalide peut casser sudo pour tout le monde, donc on ne
+    # le déploie jamais sans validation préalable.
+    if visudo -c -f "$sudo_tmp" > /dev/null 2>&1; then
+        mv "$sudo_tmp" "$sudo_drop_in"
+        chmod 0440 "$sudo_drop_in"
+        log "sudo command logging and reduced credential caching enabled."
+    else
+        rm -f "$sudo_tmp"
+        log "Generated sudoers drop-in failed validation, skipping (sudo left unchanged)."
+    fi
+
+    # Ne restreindre su au groupe 'sudo' que si ce groupe a réellement des
+    # membres : sinon, cela couperait 'su' pour tout le monde.
+    if getent group sudo > /dev/null 2>&1 && [ -n "$(getent group sudo | cut -d: -f4)" ]; then
+        if [ -f /etc/pam.d/su ] && ! grep -q 'pam_wheel.so' /etc/pam.d/su; then
+            echo 'auth required pam_wheel.so use_uid group=sudo' >> /etc/pam.d/su
+            log "su restricted to members of the 'sudo' group."
+        fi
+    else
+        log "Group 'sudo' has no members, skipping su restriction to avoid locking everyone out."
+    fi
+}
+
+# Wire pam_passwdqc into the PAM password stack via pam-auth-update, rather
+# than editing /etc/pam.d/common-password by hand.
+configure_pam_passwdqc() {
+    if ! dpkg -l | grep -q "^ii  libpam-passwdqc "; then
+        log "libpam-passwdqc not installed, skipping password quality PAM setup."
+        return
+    fi
+
+    log "Enabling pam_passwdqc via pam-auth-update..."
+    if command -v pam-auth-update &> /dev/null; then
+        DEBIAN_FRONTEND=noninteractive pam-auth-update --enable passwdqc 2>/dev/null
+        log "pam_passwdqc enabled."
+    else
+        log "pam-auth-update not found; please enable pam_passwdqc manually."
+    fi
+}
+
+# Enable sysstat's periodic system activity data collection (sadc), which
+# the package installs disabled by default on Debian/Ubuntu.
+configure_sysstat() {
+    if ! command -v sar &> /dev/null; then
+        log "sysstat not found, skipping."
+        return
+    fi
+
+    log "Enabling sysstat data collection..."
+    SYSSTAT_DEFAULT="/etc/default/sysstat"
+    if [ -f "$SYSSTAT_DEFAULT" ]; then
+        if grep -q '^ENABLED=' "$SYSSTAT_DEFAULT"; then
+            sed -i 's/^ENABLED=.*/ENABLED="true"/' "$SYSSTAT_DEFAULT"
+        else
+            echo 'ENABLED="true"' >> "$SYSSTAT_DEFAULT"
+        fi
+    fi
+    systemctl enable sysstat > /dev/null 2>&1
+    systemctl restart sysstat > /dev/null 2>&1
+    log "sysstat data collection is active."
+}
+
 # Configure installed packages
 configure_installed_packages() {
     log "Configuring installed packages..."
@@ -458,21 +579,99 @@ install_extras() {
     install_package apt-listbugs
     install_package libpam-tmpdir
     install_package apt-show-versions
-    install_package pam_passwdqc
+    # Le paquet Debian/Ubuntu s'appelle libpam-passwdqc (l'ancien nom
+    # pam_passwdqc n'existe pas dans les dépôts et échouait silencieusement).
+    install_package libpam-passwdqc
+    install_package aide
+    install_package chrony
     log "Additional security tools installed."
+}
+
+# Initialize the AIDE file integrity database. Run late, after the rest of
+# the script's configuration changes, so the baseline reflects the final
+# hardened state instead of flagging every file this script just touched.
+configure_aide() {
+    if ! command -v aide &> /dev/null; then
+        log "AIDE not found, skipping file integrity baseline."
+        return
+    fi
+
+    log "Initializing AIDE file integrity database (this can take a while)..."
+    if command -v aideinit &> /dev/null; then
+        aideinit -y -f >> /var/log/config_script.log 2>&1
+    else
+        aide --init >> /var/log/config_script.log 2>&1
+        if [ -f /var/lib/aide/aide.db.new ]; then
+            mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+        elif [ -f /var/lib/aide/aide.db.new.gz ]; then
+            mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+        fi
+    fi
+    log "AIDE database initialized. Verify /etc/cron.daily/aide (or a systemd timer) is scheduled for periodic checks."
+}
+
+# Update rkhunter's rootkit signature database and re-baseline the file
+# properties it tracks. Run late for the same reason as configure_aide().
+configure_rkhunter() {
+    if ! command -v rkhunter &> /dev/null; then
+        log "rkhunter not found, skipping."
+        return
+    fi
+
+    log "Updating rkhunter and baselining file properties..."
+    RKHUNTER_DEFAULT="/etc/default/rkhunter"
+    if [ -f "$RKHUNTER_DEFAULT" ]; then
+        if grep -q '^CRON_DAILY_RUN=' "$RKHUNTER_DEFAULT"; then
+            sed -i 's/^CRON_DAILY_RUN=.*/CRON_DAILY_RUN="true"/' "$RKHUNTER_DEFAULT"
+        else
+            echo 'CRON_DAILY_RUN="true"' >> "$RKHUNTER_DEFAULT"
+        fi
+    fi
+
+    rkhunter --update --nocolors >> /var/log/config_script.log 2>&1
+    rkhunter --propupd --nocolors >> /var/log/config_script.log 2>&1
+    log "rkhunter database updated; daily scan enabled via $RKHUNTER_DEFAULT."
+}
+
+# Enable debsums' scheduled package integrity check.
+configure_debsums() {
+    if ! command -v debsums &> /dev/null; then
+        log "debsums not found, skipping."
+        return
+    fi
+
+    log "Enabling debsums scheduled integrity check..."
+    DEBSUMS_DEFAULT="/etc/default/debsums"
+    if [ -f "$DEBSUMS_DEFAULT" ]; then
+        if grep -q '^CRON_CHECK=' "$DEBSUMS_DEFAULT"; then
+            sed -i 's/^CRON_CHECK=.*/CRON_CHECK=true/' "$DEBSUMS_DEFAULT"
+        else
+            echo 'CRON_CHECK=true' >> "$DEBSUMS_DEFAULT"
+        fi
+    fi
+    log "debsums scheduled check enabled via $DEBSUMS_DEFAULT."
 }
 
 # Run the functions
 install_extras
 configure_login_defs
 harden_compilers
+configure_sysctl
+configure_module_blacklist
 configure_ssh
 configure_ufw
+configure_chrony
 configure_permissions
 configure_fail2ban
 configure_auditd
+configure_sudo_su
+configure_pam_passwdqc
+configure_sysstat
 disable_usb_storage
 configure_installed_packages
+configure_aide
+configure_rkhunter
+configure_debsums
 
 
 # Reboot system

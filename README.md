@@ -14,9 +14,18 @@ This script is **intended for educational purposes** and should be customized to
   configures a matching UFW firewall policy (default deny incoming, only the
   configured SSH port allowed).
 - Installs and configures Fail2Ban, auditd (with a baseline `config/audit.rules`
-  rule set), ClamAV, AppArmor and RSyslog.
+  rule set), ClamAV, AppArmor, RSyslog and chrony (time sync).
 - Applies systemd sandboxing drop-ins (`services/*-hardening.sh`) to the
   ClamAV, Fail2Ban and RSyslog services.
+- Applies kernel/network sysctl hardening (`config/sysctl-hardening.conf`:
+  ASLR, anti-spoofing, ICMP/redirect restrictions, SYN flood mitigation, ...)
+  and blacklists uncommon filesystem/network-protocol kernel modules
+  (`config/modprobe-blacklist.conf`).
+- Hardens sudo (command logging, shorter credential caching) and restricts
+  `su` to the `sudo` group; wires `pam_passwdqc` into the PAM password stack.
+- Activates security tools that are otherwise installed but inert by
+  default: rkhunter and debsums scheduled checks, sysstat data collection,
+  and an AIDE file integrity baseline.
 
 > **Note:** this script has been reviewed carefully but not executed against a
 > live system as part of recent changes. Test it in a disposable VM/container
