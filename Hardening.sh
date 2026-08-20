@@ -6,12 +6,27 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Resolve the script's own directory so config/ and services/ can be
+# referenced reliably regardless of the caller's working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 sudo apt update -y
 sudo apt upgrade -y
 # Function to display a status message
 log() {
     echo -e "\033[1;32m[INFO]\033[0m $1"
+}
+
+# Run a services/*.sh systemd hardening drop-in script, if present.
+apply_service_hardening() {
+    local script_path="$1"
+    if [ -f "$script_path" ]; then
+        log "Applying hardening: $(basename "$script_path")..."
+        chmod +x "$script_path"
+        "$script_path"
+    else
+        log "Hardening script not found at $script_path, skipping."
+    fi
 }
 
 # Check and install required packages
@@ -118,6 +133,7 @@ EOF
 configure_ssh() {
     log "SSH hardening..."
     SSHD_CONFIG="/etc/ssh/sshd_config"
+    SSH_CONFIG_FILE="$SCRIPT_DIR/config/ssh.config"
 
     # Demander le nom de l'entreprise à l'utilisateur
     read -p "Enter company name: " entity_name
@@ -135,7 +151,8 @@ configure_ssh() {
         cp "$SSHD_CONFIG" /etc/ssh/sshd_config.bak
     fi
 
-    # Configuration des options SSH
+    # Configuration des options SSH (valeurs par défaut, surchargées
+    # par config/ssh.config si le fichier est présent)
     declare -A ssh_options=(
         [AllowTcpForwarding]="NO"
         [ClientAliveCountMax]="2"
@@ -147,9 +164,25 @@ configure_ssh() {
         [X11Forwarding]="NO"
         [AllowAgentForwarding]="NO"
         [Port]="2222"
-        [Banner]="/etc/issue"
-        [PermitRootLogin]="no"
     )
+
+    if [[ -f "$SSH_CONFIG_FILE" ]]; then
+        log "Loading SSH hardening options from $SSH_CONFIG_FILE"
+        while IFS='=' read -r cfg_key cfg_value; do
+            # Ignorer les lignes vides et les commentaires
+            [[ -z "$cfg_key" || "$cfg_key" == \#* ]] && continue
+            # Nettoyer les espaces superflus autour de la clé/valeur
+            cfg_key="$(echo -n "$cfg_key" | tr -d '[:space:]')"
+            cfg_value="$(echo -n "$cfg_value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [[ -n "$cfg_key" ]] && ssh_options["$cfg_key"]="$cfg_value"
+        done < "$SSH_CONFIG_FILE"
+    else
+        log "Config file not found at $SSH_CONFIG_FILE, using built-in defaults."
+    fi
+
+    # Paramètres critiques imposés indépendamment du fichier de config
+    ssh_options[Banner]="/etc/issue"
+    ssh_options[PermitRootLogin]="no"
 
     for key in "${!ssh_options[@]}"; do
         if grep -q "^$key " "$SSHD_CONFIG"; then
@@ -257,6 +290,9 @@ EOF
     systemctl enable fail2ban > /dev/null
     systemctl start fail2ban > /dev/null
     log "Fail2Ban is ready."
+
+    # Apply systemd sandboxing hardening to the Fail2Ban service
+    apply_service_hardening "$SCRIPT_DIR/services/fail2ban-hardening.sh"
 }
 
 # Configure installed packages
@@ -280,6 +316,9 @@ EOL
         systemctl start clamav-freshclam > /dev/null
         log "ClamAV is ready."
     fi
+
+    # Apply systemd sandboxing hardening to the ClamAV Fresh Clam service
+    apply_service_hardening "$SCRIPT_DIR/services/clamav-hardening.sh"
 
     # AppArmor
     if systemctl is-active --quiet apparmor; then
@@ -305,6 +344,9 @@ EOL
         systemctl start rsyslog > /dev/null
         log "RSyslog configured and activated."
     fi
+
+    # Apply systemd sandboxing hardening to the RSyslog service
+    apply_service_hardening "$SCRIPT_DIR/services/rsyslog-hardening.sh"
 
     # Unattended-Upgrades
     if dpkg -l | grep -q "^ii  unattended-upgrades "; then

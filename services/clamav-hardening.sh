@@ -86,6 +86,3 @@ echo "ClamAV Fresh Clam service has been successfully hardened."
 
 
 
-
-
-

@@ -15,17 +15,24 @@ This script is **intended for educational purposes** and should be customized to
 
 ## Prerequisites
 Before running this script:
-1. Please modify the config files in config/:
+1. Clone the repository:
    ```bash
    git clone https://github.com/Paraziteuh/Hardening-V0.git
    cd Hardening-V0
+   ```
+
+2. (Optional) Review and adjust `config/ssh.config` to match your needs.
+   Any `KEY=VALUE` pair set there overrides the script's built-in SSH
+   hardening defaults.
+
+3. Run the script:
+   ```bash
    sudo chmod +x Hardening.sh
    sed -i 's/\r//g' Hardening.sh
    sudo ./Hardening.sh
    ```
 
-2. Run the following:
-
+4. Audit the result:
    ```bash
    sudo lynis audit system --pentest
    ```
