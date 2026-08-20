@@ -184,6 +184,10 @@ configure_ssh() {
     ssh_options[Banner]="/etc/issue"
     ssh_options[PermitRootLogin]="no"
 
+    # Rendu disponible globalement pour configure_ufw(), afin que le pare-feu
+    # autorise le port SSH réellement configuré (et pas seulement le 22 par défaut).
+    SSH_PORT="${ssh_options[Port]}"
+
     for key in "${!ssh_options[@]}"; do
         if grep -q "^$key " "$SSHD_CONFIG"; then
             # Utiliser un délimiteur qui ne risque pas d'apparaître dans le nom de l'entreprise
@@ -238,7 +242,34 @@ EOF
     # Redémarrer le service SSH pour appliquer les modifications
     systemctl restart sshd
     log "SSH service configured."
-    
+
+}
+
+# UFW firewall configuration
+configure_ufw() {
+    if ! command -v ufw &> /dev/null; then
+        log "ufw not found, skipping firewall configuration."
+        return
+    fi
+
+    log "Configuring UFW firewall..."
+
+    ufw default deny incoming > /dev/null
+    ufw default allow outgoing > /dev/null
+
+    # Autoriser explicitement le port SSH réellement configuré par
+    # configure_ssh() (2222 par défaut, ou la valeur de config/ssh.config),
+    # sans quoi l'activation d'ufw couperait l'accès distant.
+    local ssh_port="${SSH_PORT:-22}"
+    ufw allow "${ssh_port}/tcp" comment 'SSH' > /dev/null
+    log "SSH allowed on port ${ssh_port}/tcp."
+
+    # --force évite le prompt de confirmation interactif
+    ufw --force enable > /dev/null
+    ufw reload > /dev/null
+
+    log "UFW firewall is active."
+    ufw status verbose
 }
 
 
@@ -277,10 +308,13 @@ configure_fail2ban() {
 
     FAIL2BAN_CONFIG="/etc/fail2ban/jail.local"
 
+    # "port" doit correspondre au port SSH réellement configuré par
+    # configure_ssh() : si sshd écoute sur 2222 mais que ce jail ne
+    # bannit que le port 22, les bans n'ont aucun effet sur le trafic réel.
     cat <<EOF > "$FAIL2BAN_CONFIG"
 [sshd]
 enabled  = true
-port     = ssh
+port     = ${SSH_PORT:-ssh}
 logpath  = /var/log/auth.log
 maxretry = 3
 findtime = 600
@@ -293,6 +327,45 @@ EOF
 
     # Apply systemd sandboxing hardening to the Fail2Ban service
     apply_service_hardening "$SCRIPT_DIR/services/fail2ban-hardening.sh"
+}
+
+# Configure auditd rules
+configure_auditd() {
+    if ! command -v auditctl &> /dev/null; then
+        log "auditd is not installed, skipping audit rules configuration."
+        return
+    fi
+
+    log "Configuring auditd rules..."
+
+    AUDIT_RULES_FILE="$SCRIPT_DIR/config/audit.rules"
+    if [[ ! -f "$AUDIT_RULES_FILE" ]]; then
+        log "Audit rules file not found at $AUDIT_RULES_FILE, skipping."
+        return
+    fi
+
+    if [[ -d /etc/audit/rules.d ]]; then
+        cp "$AUDIT_RULES_FILE" /etc/audit/rules.d/hardening.rules
+        if command -v augenrules &> /dev/null; then
+            augenrules --load
+        else
+            # Le paquet auditd sur Debian/Ubuntu documente "service auditd
+            # restart" plutôt que "systemctl restart" pour éviter un état
+            # incohérent lié à la prise en main du socket netlink d'audit.
+            service auditd restart
+        fi
+    else
+        cp "$AUDIT_RULES_FILE" /etc/audit/audit.rules
+        service auditd restart
+    fi
+
+    systemctl enable auditd > /dev/null 2>&1
+
+    if systemctl is-active --quiet auditd; then
+        log "auditd is active with hardening rules."
+    else
+        log "auditd could not be started, please check manually."
+    fi
 }
 
 # Configure installed packages
@@ -394,8 +467,10 @@ install_extras
 configure_login_defs
 harden_compilers
 configure_ssh
+configure_ufw
 configure_permissions
 configure_fail2ban
+configure_auditd
 disable_usb_storage
 configure_installed_packages
 
